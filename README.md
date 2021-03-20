@@ -9,7 +9,6 @@ Heartbeat exposes 2 types of APIs:
 1. REST API to talk to the UI.
 1. an RPC API to talk to the other nodes in the cluster.
 
-
 ### REST API description
 
 - `GET /services`
@@ -21,7 +20,7 @@ available instances
 [
   {
     "name": "service-a",
-    "uptime": 12312321, 
+    "uptime": 12312321,
     "instances": [
       "host1:port1",
       "host2:port2",
@@ -34,25 +33,24 @@ available instances
 - `GET /config`
 
 This request returns the list of all the available key-values stored in the
-heartbeat server  
+heartbeat server
 
 ```json
 [
   {
     "key": "build-id",
-    "value": "12AEDE234", 
+    "value": "12AEDE234",
   },
   ...
 ]
 ```
-
 
 - `PUT /config`
 
 ```json
 {
   "key": "key",
-  "value": "value",
+  "value": "value"
 }
 ```
 

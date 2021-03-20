@@ -130,7 +130,3 @@ func (n *Node) addVoter(conf raft.Configuration, id, addr string) error {
 	n.logger.Printf("Node '%s' at '%s' joined the cluster successfully", id, addr)
 	return nil
 }
-
-func (n *Node) ServeHTTP() {
-
-}

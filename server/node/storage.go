@@ -13,24 +13,12 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-type instanceEntry struct {
-	port       uint16
-	host       string
-	lastBeatMs uint64
-	created    time.Time
-}
-
-type serviceEntry struct {
-	name      string
-	instances []*instanceEntry
-}
-
 type inMemStore struct {
 	mu sync.Mutex
 	m  map[string]string
 
 	ms       sync.Mutex
-	services map[string]*serviceEntry
+	services map[string]*ServiceEntry
 
 	Node   *Node
 	logger *log.Logger
@@ -42,10 +30,19 @@ func NewInMemStore() *inMemStore {
 		m:  make(map[string]string),
 
 		ms:       sync.Mutex{},
-		services: make(map[string]*serviceEntry),
+		services: make(map[string]*ServiceEntry),
 
 		logger: log.New(os.Stderr, "(Store) ", log.LstdFlags),
 	}
+}
+
+func (s *inMemStore) GetResources() map[string]*ServiceEntry {
+	// copy over the local map
+	services := make(map[string]*ServiceEntry)
+	for k, v := range s.services {
+		services[k] = v
+	}
+	return services
 }
 
 func (s *inMemStore) Put(key string, value string) error {
@@ -61,6 +58,30 @@ func (s *inMemStore) Put(key string, value string) error {
 	}
 
 	return execCommand(cmd, s.Node.raft)
+}
+
+type DelRequest struct {
+	Name     string
+	Instance InstanceEntry
+}
+
+func (s *inMemStore) DeleteInstance(name string, instance InstanceEntry) {
+	var b bytes.Buffer
+	req := DelRequest{
+		Name:     name,
+		Instance: instance,
+	}
+	if err := json.NewEncoder(&b).Encode(req); err != nil {
+		s.logger.Printf("Could not serialize the entry delete request (%v): %s", req, err)
+		return
+	}
+
+	cmd := &Command{
+		Type:  "ENDEL",
+		Value: b.String(),
+	}
+
+	execCommand(cmd, s.Node.raft)
 }
 
 func (s *inMemStore) Get(key string) (string, error) {
@@ -82,14 +103,14 @@ func (s *inMemStore) GetServices() *ServicesResponse {
 			Name:      k,
 			Instances: make([]Instance, 0),
 		}
-		for _, inst := range v.instances {
+		for _, inst := range v.Instances {
 			// Devide by a `1000` as the `Sub` call will return a `Duration` which is
 			// a type alias of int64, giving the time in nanoseconds
-			uptime := uint64(time.Now().Sub(inst.created)) / uint64(1000)
+			uptime := uint64(time.Now().Sub(inst.Created)) / uint64(1000)
 
 			service.Instances = append(service.Instances, Instance{
-				Port:   inst.port,
-				Host:   inst.host,
+				Port:   inst.Port,
+				Host:   inst.Host,
 				Uptime: uptime,
 			})
 		}
@@ -149,6 +170,8 @@ func (s *inMemStore) Apply(l *raft.Log) interface{} {
 		return s.execDel(cmd.Key, cmd.Value)
 	case "REG":
 		return s.execReg(cmd.Value)
+	case "ENDEL":
+		return s.execEntryDel(cmd.Value)
 	default:
 		s.logger.Fatalf("Cannot unmarchall command")
 		return nil
@@ -166,9 +189,9 @@ func (s *inMemStore) execReg(value string) interface{} {
 	se, has := s.services[reg.ServiceName]
 	if !has {
 		s.logger.Printf("Registering the service '%s' for the first time", reg.ServiceName)
-		se = &serviceEntry{
-			name:      reg.ServiceName,
-			instances: make([]*instanceEntry, 0),
+		se = &ServiceEntry{
+			Name:      reg.ServiceName,
+			Instances: make([]*InstanceEntry, 0),
 		}
 	}
 
@@ -176,18 +199,18 @@ func (s *inMemStore) execReg(value string) interface{} {
 	// If an entry already exists with the same host:port pair
 	// act as a lease renewal, updating the last time it got updated to prevent
 	// the cleaner from removing it later on.
-	for _, v := range se.instances {
-		if v.host == reg.Host && v.port == reg.Port {
-			v.lastBeatMs = uint64(curTime.UnixNano())
+	for _, v := range se.Instances {
+		if v.Host == reg.Host && v.Port == reg.Port {
+			v.LastBeatMs = uint64(curTime.UnixNano()) / uint64(1e6)
 			return nil
 		}
 	}
 
-	se.instances = append(se.instances, &instanceEntry{
-		host:       reg.Host,
-		port:       reg.Port,
-		created:    curTime,
-		lastBeatMs: uint64(curTime.UnixNano()),
+	se.Instances = append(se.Instances, &InstanceEntry{
+		Host:       reg.Host,
+		Port:       reg.Port,
+		Created:    curTime,
+		LastBeatMs: uint64(curTime.UnixNano()) / uint64(1e6),
 	})
 
 	s.services[reg.ServiceName] = se
@@ -205,6 +228,35 @@ func (s *inMemStore) execDel(key, value string) interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, key)
+	return nil
+}
+
+func (s *inMemStore) execEntryDel(value string) interface{} {
+	var req DelRequest
+	if err := json.NewDecoder(bytes.NewReader([]byte(value))).Decode(&req); err != nil {
+		s.logger.Printf("Failed to execute entry delete request for %s: %s", value, err)
+		return err
+	}
+
+	s.ms.Lock()
+	defer s.ms.Unlock()
+
+	newEntries := make([]*InstanceEntry, 0)
+	se, has := s.services[req.Name]
+	if !has {
+		s.logger.Printf("Trying to remove an already removed instance entry '%s:%d'", req.Instance.Host, req.Instance.Port)
+		return nil
+	}
+	// Remove any entry for the given service that has the same host:port
+	// configuration by not including it in the newEntries list.
+	for _, v := range se.Instances {
+		if v.Host == req.Instance.Host && v.Port == req.Instance.Port {
+			s.logger.Printf("Found an instance to remove from the registery")
+		} else {
+			newEntries = append(newEntries, v)
+		}
+	}
+	se.Instances = newEntries
 	return nil
 }
 

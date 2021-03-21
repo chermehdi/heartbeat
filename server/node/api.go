@@ -20,6 +20,24 @@ type Command struct {
 	Value string `json:"value,omitempty"`
 }
 
+type InstanceEntry struct {
+	Port       uint16
+	Host       string
+	LastBeatMs uint64
+	Created    time.Time
+}
+
+type ServiceEntry struct {
+	Name      string
+	Instances []*InstanceEntry
+}
+
+// CleanableResource represents a resource (services) accessible by the cleanup
+// service.
+type CleanableResource interface {
+	GetResources() map[string]*ServiceEntry
+}
+
 // A storage engine abstraction over the key-value store.
 //
 // The engine can be thought of as a Finite state machine that can be fed into
@@ -27,6 +45,9 @@ type Command struct {
 type StorageEngine interface {
 	// Inherit the behaviour of a Raft state machine.
 	raft.FSM
+
+	// Inherit the CleanableReource
+	CleanableResource
 
 	// Put the key-value pair into the underlying storage, and return an error if it's not possible to
 	// finish the operation.
@@ -47,6 +68,10 @@ type StorageEngine interface {
 	// instance, This is usually resulting from a new service starting somewhere,
 	// and doing a heartbeat request.
 	RegisterInstance(InstanceRegistration)
+
+	// DeleteInstance will delete the corresponding entry (instance) from the replicated
+	// state machine
+	DeleteInstance(string, InstanceEntry)
 }
 
 // JoinRequest is the message received by the API to handle new nodes joining

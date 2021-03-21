@@ -14,11 +14,13 @@ import (
 )
 
 var (
-	port       = flag.Int("port", 9000, "Port used by the client to connect")
-	rport      = flag.Int("rport", 9999, "Port used by the underlying Raft protocol")
-	leaderAddr = flag.String("leader", "", "The leader's join address, if this node is the leader when bootstrapping the cluster, this should be empty")
-	storageDir = flag.String("sdir", "/tmp/heartbeat/data", "A path to the storage directory")
-	id         = flag.String("id", "node-1", "Node identifier")
+	port            = flag.Int("port", 9000, "Port used by the client to connect")
+	rport           = flag.Int("rport", 9999, "Port used by the underlying Raft protocol")
+	leaderAddr      = flag.String("leader", "", "The leader's join address, if this node is the leader when bootstrapping the cluster, this should be empty")
+	storageDir      = flag.String("sdir", "/tmp/heartbeat/data", "A path to the storage directory")
+	cleanerDuration = flag.Int("cleaner_duration", 10, "The cleaner process duration in seconds")
+	minHeartbeat    = flag.Int("min_heartbeat", 20, "The minimum duration to keep an instance after it's last heartbeat before removing it from the registry")
+	id              = flag.String("id", "node-1", "Node identifier")
 )
 
 func main() {
@@ -55,6 +57,9 @@ func main() {
 		}
 		res.Body.Close()
 	}
+
+	cleaner := node.NewCleaner(time.Duration(int64(*cleanerDuration)*int64(1e9)), time.Duration(int64(*minHeartbeat)*int64(1e9)), nd)
+	go cleaner.Start()
 
 	time.Sleep(300 * time.Second)
 }

@@ -1,19 +1,36 @@
 package node
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/raft"
 )
 
+type instanceEntry struct {
+	port       uint16
+	host       string
+	lastBeatMs uint64
+	created    time.Time
+}
+
+type serviceEntry struct {
+	name      string
+	instances []*instanceEntry
+}
+
 type inMemStore struct {
 	mu sync.Mutex
 	m  map[string]string
+
+	ms       sync.Mutex
+	services map[string]*serviceEntry
 
 	Node   *Node
 	logger *log.Logger
@@ -21,8 +38,12 @@ type inMemStore struct {
 
 func NewInMemStore() *inMemStore {
 	return &inMemStore{
-		mu:     sync.Mutex{},
-		m:      make(map[string]string),
+		mu: sync.Mutex{},
+		m:  make(map[string]string),
+
+		ms:       sync.Mutex{},
+		services: make(map[string]*serviceEntry),
+
 		logger: log.New(os.Stderr, "(Store) ", log.LstdFlags),
 	}
 }
@@ -46,6 +67,50 @@ func (s *inMemStore) Get(key string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.m[key], nil
+}
+
+func (s *inMemStore) GetServices() *ServicesResponse {
+	s.ms.Lock()
+	defer s.ms.Unlock()
+
+	res := &ServicesResponse{
+		Services: make([]Service, 0),
+	}
+
+	for k, v := range s.services {
+		service := Service{
+			Name:      k,
+			Instances: make([]Instance, 0),
+		}
+		for _, inst := range v.instances {
+			// Devide by a `1000` as the `Sub` call will return a `Duration` which is
+			// a type alias of int64, giving the time in nanoseconds
+			uptime := uint64(time.Now().Sub(inst.created)) / uint64(1000)
+
+			service.Instances = append(service.Instances, Instance{
+				Port:   inst.port,
+				Host:   inst.host,
+				Uptime: uptime,
+			})
+		}
+		res.Services = append(res.Services, service)
+	}
+
+	return res
+}
+
+func (s *inMemStore) RegisterInstance(reg InstanceRegistration) {
+	var b bytes.Buffer
+	if err := json.NewEncoder(&b).Encode(reg); err != nil {
+		s.logger.Printf("Could not serialize the registration request (%v): %s", reg, err)
+		return
+	}
+	cmd := &Command{
+		Type:  "REG",
+		Value: b.String(),
+	}
+
+	execCommand(cmd, s.Node.raft)
 }
 
 func (s *inMemStore) Delete(key string) (string, error) {
@@ -82,10 +147,51 @@ func (s *inMemStore) Apply(l *raft.Log) interface{} {
 		return s.execPut(cmd.Key, cmd.Value)
 	case "DEL":
 		return s.execDel(cmd.Key, cmd.Value)
+	case "REG":
+		return s.execReg(cmd.Value)
 	default:
 		s.logger.Fatalf("Cannot unmarchall command")
 		return nil
 	}
+}
+
+func (s *inMemStore) execReg(value string) interface{} {
+	var reg InstanceRegistration
+	if err := json.NewDecoder(bytes.NewReader([]byte(value))).Decode(&reg); err != nil {
+		s.logger.Printf("Failed executing a registration request (%s): %s", value, err)
+		return err
+	}
+	s.ms.Lock()
+	defer s.ms.Unlock()
+	se, has := s.services[reg.ServiceName]
+	if !has {
+		s.logger.Printf("Registering the service '%s' for the first time", reg.ServiceName)
+		se = &serviceEntry{
+			name:      reg.ServiceName,
+			instances: make([]*instanceEntry, 0),
+		}
+	}
+
+	curTime := time.Now()
+	// If an entry already exists with the same host:port pair
+	// act as a lease renewal, updating the last time it got updated to prevent
+	// the cleaner from removing it later on.
+	for _, v := range se.instances {
+		if v.host == reg.Host && v.port == reg.Port {
+			v.lastBeatMs = uint64(curTime.UnixNano())
+			return nil
+		}
+	}
+
+	se.instances = append(se.instances, &instanceEntry{
+		host:       reg.Host,
+		port:       reg.Port,
+		created:    curTime,
+		lastBeatMs: uint64(curTime.UnixNano()),
+	})
+
+	s.services[reg.ServiceName] = se
+	return nil
 }
 
 func (s *inMemStore) execPut(key, value string) interface{} {

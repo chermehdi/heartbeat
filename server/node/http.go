@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -95,9 +96,25 @@ func (s *HttpServer) handleJoin(req *http.Request, res http.ResponseWriter) {
 }
 
 func (s *HttpServer) handleServices(req *http.Request, res http.ResponseWriter) {
+	services := s.node.store.GetServices()
+	if err := json.NewEncoder(res).Encode(services); err != nil {
+		res.Write([]byte(fmt.Sprintf("Server error occured: %s", err)))
+		res.WriteHeader(http.StatusInternalServerError)
+	}
 }
 
 func (s *HttpServer) handleHeartbeat(req *http.Request, res http.ResponseWriter) {
+	var reg InstanceRegistration
+	if err := json.NewDecoder(req.Body).Decode(&reg); err != nil {
+		s.logger.Printf("Could not parse heartbeat request: %s", err)
+		s.badRequest(res)
+		return
+	}
+
+	s.logger.Printf("Staring instance registration for service='%s' host='%s' port='%d'", reg.ServiceName, reg.Host, reg.Port)
+	s.node.store.RegisterInstance(reg)
+
+	res.WriteHeader(http.StatusOK)
 }
 
 func (s *HttpServer) badRequest(res http.ResponseWriter) {

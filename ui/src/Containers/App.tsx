@@ -12,6 +12,7 @@ interface IProps {
 }
 
 export const MyD3Component: React.FC<IProps> = props => {
+  // todo : export & change name of this component
   const d3Container = useRef(null)
   useEffect(
     () => {
@@ -32,9 +33,6 @@ export const MyD3Component: React.FC<IProps> = props => {
           d3
             .pack()
             .size([width, height])
-            .radius(d => {
-              return 45
-            })
             .padding(30)(
             d3
               .hierarchy(data)

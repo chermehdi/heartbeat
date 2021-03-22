@@ -9,7 +9,7 @@ export const flareData = (data: any): any => {
       name: service.name,
       children: service.instances.map((i: any) => ({
         name: i,
-        value: 6714,
+        value: Math.floor(Math.random() * 6000 + 100),
       })),
     })),
   }
